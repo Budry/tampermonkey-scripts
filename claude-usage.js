@@ -3,7 +3,7 @@
 // @namespace    https://claude.ai
 // @version      1.0
 // @description  Přidání výpisu kolik max % mohu aktuálně mít využito
-// @match        https://claude.ai/settings/usage
+// @match        https://claude.ai/*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -20,6 +20,10 @@
     let observer = null;
     let debounceTimer = null;
     let intervalId = null;
+
+    function isUsageSettingsOpen() {
+        return window.location.hash === '#settings/usage';
+    }
 
     function getLastReset(now) {
         const reset = new Date(now);
@@ -83,6 +87,10 @@
     }
 
     function enhanceUsageBlock() {
+        if (!isUsageSettingsOpen()) {
+            return false;
+        }
+
         const resetSpan = findResetSpan();
 
         if (!resetSpan) {
@@ -113,15 +121,14 @@
     }
 
     function scheduleEnhance() {
+        if (!isUsageSettingsOpen()) {
+            return;
+        }
+
         clearTimeout(debounceTimer);
 
         debounceTimer = setTimeout(() => {
-            const success = enhanceUsageBlock();
-
-            if (success && observer) {
-                observer.disconnect();
-                observer = null;
-            }
+            enhanceUsageBlock();
         }, 500);
     }
 
@@ -139,16 +146,10 @@
 
         // Stačí aktualizace jednou za minutu.
         intervalId = setInterval(() => {
-            enhanceUsageBlock();
-        }, 60 * 1000);
-
-        // Bezpečnost: observer vypnout po 30 sekundách, aby nikdy nezůstal viset při načítání.
-        setTimeout(() => {
-            if (observer) {
-                observer.disconnect();
-                observer = null;
+            if (isUsageSettingsOpen()) {
+                enhanceUsageBlock();
             }
-        }, 30 * 1000);
+        }, 60 * 1000);
     }
 
     if (document.readyState === 'loading') {
@@ -156,4 +157,6 @@
     } else {
         start();
     }
+
+    window.addEventListener('hashchange', scheduleEnhance);
 })();
