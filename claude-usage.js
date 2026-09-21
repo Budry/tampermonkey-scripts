@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Usage Progress - limits
 // @namespace    https://claude.ai
-// @version      1.0
+// @version      1.1
 // @description  Přidání výpisu kolik max % mohu aktuálně mít využito
 // @match        https://claude.ai/*
 // @grant        none
@@ -14,6 +14,8 @@
     const RESET_DAY = 6;       // sobota: 0=neděle, 1=pondělí, ..., 6=sobota
     const RESET_HOUR = 18;     // 18:00
     const RESET_MINUTE = 0;
+
+    const SESSION_DURATION_MS = 5 * 60 * 60 * 1000; // 5h limit "Current session"
 
     const BADGE_CLASS = 'tm-expected-usage';
 
@@ -46,7 +48,7 @@
         return next;
     }
 
-    function getExpectedUsagePercent() {
+    function getExpectedWeeklyPercent() {
         const now = new Date();
         const lastReset = getLastReset(now);
         const nextReset = getNextReset(now);
@@ -57,48 +59,70 @@
         return Math.min(100, Math.max(0, (elapsed / total) * 100));
     }
 
-    function findResetSpan() {
-        const spans = document.querySelectorAll('span');
+    function parseSessionResetDate(resetText, now) {
+        const match = resetText.match(/Resets at (\d{1,2}):(\d{2})\s*(AM|PM)/i);
 
-        for (const span of spans) {
-            const text = span.textContent || '';
+        if (!match) {
+            return null;
+        }
 
-            if (!text.includes('Resets')) {
+        let hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        const meridiem = match[3].toUpperCase();
+
+        if (meridiem === 'PM' && hours !== 12) {
+            hours += 12;
+        } else if (meridiem === 'AM' && hours === 12) {
+            hours = 0;
+        }
+
+        const candidate = new Date(now);
+        candidate.setHours(hours, minutes, 0, 0);
+
+        if (candidate <= now) {
+            candidate.setDate(candidate.getDate() + 1);
+        }
+
+        return candidate;
+    }
+
+    function getExpectedSessionPercent(resetText) {
+        const now = new Date();
+        const nextReset = parseSessionResetDate(resetText, now);
+
+        if (!nextReset) {
+            return null;
+        }
+
+        const lastReset = new Date(nextReset.getTime() - SESSION_DURATION_MS);
+        const elapsed = now - lastReset;
+
+        return Math.min(100, Math.max(0, (elapsed / SESSION_DURATION_MS) * 100));
+    }
+
+    function findUsageRow(labelText) {
+        const labelSpans = document.querySelectorAll('span.text-body.text-primary');
+
+        for (const labelSpan of labelSpans) {
+            if ((labelSpan.textContent || '').trim() !== labelText) {
                 continue;
             }
 
-            const container = span.closest('div.flex.w-full.flex-row.flex-wrap');
+            const row = labelSpan.closest('div.flex.w-full.flex-wrap.items-center.justify-between');
 
-            if (!container) {
-                continue;
-            }
-
-            const containerText = container.textContent || '';
-
-            if (
-                containerText.includes('All models') &&
-                containerText.includes('used')
-            ) {
-                return span;
+            if (row) {
+                return row;
             }
         }
 
         return null;
     }
 
-    function enhanceUsageBlock() {
-        if (!isUsageSettingsOpen()) {
-            return false;
-        }
+    function findResetSpanInRow(row) {
+        return row.querySelector('div.w-52 > span.text-footnote.text-secondary');
+    }
 
-        const resetSpan = findResetSpan();
-
-        if (!resetSpan) {
-            return false;
-        }
-
-        const expected = getExpectedUsagePercent();
-
+    function upsertBadge(resetSpan, text) {
         let badge = resetSpan.parentElement.querySelector(`.${BADGE_CLASS}`);
 
         if (!badge) {
@@ -115,9 +139,42 @@
             resetSpan.insertAdjacentElement('afterend', badge);
         }
 
-        badge.textContent = `Rovnoměrně bys teď měl mít vyčerpáno cca ${expected.toFixed(1)} %`;
+        badge.textContent = text;
+    }
+
+    function enhanceRow(labelText, computeExpectedPercent) {
+        const row = findUsageRow(labelText);
+
+        if (!row) {
+            return false;
+        }
+
+        const resetSpan = findResetSpanInRow(row);
+
+        if (!resetSpan) {
+            return false;
+        }
+
+        const expected = computeExpectedPercent(resetSpan.textContent || '');
+
+        if (expected === null || Number.isNaN(expected)) {
+            return false;
+        }
+
+        upsertBadge(resetSpan, `Rovnoměrně bys teď měl mít vyčerpáno cca ${expected.toFixed(1)} %`);
 
         return true;
+    }
+
+    function enhanceUsageBlock() {
+        if (!isUsageSettingsOpen()) {
+            return false;
+        }
+
+        const weeklyOk = enhanceRow('This week', getExpectedWeeklyPercent);
+        const sessionOk = enhanceRow('Current session', getExpectedSessionPercent);
+
+        return weeklyOk || sessionOk;
     }
 
     function scheduleEnhance() {
